@@ -133,7 +133,7 @@ func (m *AmpModule) Register(ctx modules.Context) error {
 		m.setRestrictToLocalhost(settings.RestrictManagementToLocalhost)
 
 		// Always register provider aliases - these work without an upstream
-		m.registerProviderAliases(ctx.Engine, ctx.BaseHandler, auth)
+		m.registerProviderAliases(ctx.Engine, ctx.BaseHandler, auth, ctx.PostAuthMiddleware...)
 
 		// Register management proxy routes once; middleware will gate access when upstream is unavailable.
 		// Pass auth middleware to require valid API key for all management routes.

@@ -138,6 +138,41 @@ func TestRegisterProviderAliases_AllProvidersRegistered(t *testing.T) {
 	}
 }
 
+func TestRegisterProviderAliases_PostAuthMiddleware(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+
+	base := &handlers.BaseAPIHandler{}
+
+	authCalled := false
+	postAuthCalled := false
+	authMiddleware := func(c *gin.Context) {
+		authCalled = true
+		c.Next()
+	}
+	postAuthMiddleware := func(c *gin.Context) {
+		postAuthCalled = true
+		c.AbortWithStatus(http.StatusTooManyRequests)
+	}
+
+	m := &AmpModule{authMiddleware_: authMiddleware}
+	m.registerProviderAliases(r, base, authMiddleware, postAuthMiddleware)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/provider/openai/models", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if !authCalled {
+		t.Fatal("auth middleware was not executed")
+	}
+	if !postAuthCalled {
+		t.Fatal("post-auth middleware was not executed")
+	}
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusTooManyRequests)
+	}
+}
+
 func TestRegisterProviderAliases_DynamicModelsHandler(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
