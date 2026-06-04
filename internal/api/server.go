@@ -26,6 +26,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/access"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware/inboundlimit"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware/keyexpiry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/modules"
 	ampmodule "github.com/router-for-me/CLIProxyAPI/v7/internal/api/modules/amp"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
@@ -176,6 +178,12 @@ type Server struct {
 	// ampModule is the Amp routing module for model mapping hot-reload
 	ampModule *ampmodule.AmpModule
 
+	// inboundLimiter protects client-facing API routes from unbounded concurrency.
+	inboundLimiter *inboundlimit.Middleware
+
+	// keyExpiry rejects shop-managed API keys that are not active.
+	keyExpiry *keyexpiry.Middleware
+
 	// managementRoutesRegistered tracks whether the management routes have been attached to the engine.
 	managementRoutesRegistered atomic.Bool
 	// managementRoutesEnabled controls whether management endpoints serve real handlers.
@@ -266,6 +274,8 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		currentPath:         wd,
 		envManagementSecret: envManagementSecret,
 		wsRoutes:            make(map[string]struct{}),
+		inboundLimiter:      inboundlimit.NewMiddleware(cfg.InboundLimits),
+		keyExpiry:           keyexpiry.NewFromEnv(),
 	}
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	// Save initial YAML snapshot
@@ -299,10 +309,11 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	// Register Amp module using V2 interface with Context
 	s.ampModule = ampmodule.NewLegacy(accessManager, AuthMiddleware(accessManager))
 	ctx := modules.Context{
-		Engine:         engine,
-		BaseHandler:    s.handlers,
-		Config:         cfg,
-		AuthMiddleware: AuthMiddleware(accessManager),
+		Engine:             engine,
+		BaseHandler:        s.handlers,
+		Config:             cfg,
+		AuthMiddleware:     AuthMiddleware(accessManager),
+		PostAuthMiddleware: s.postAuthMiddleware(),
 	}
 	if err := modules.RegisterModule(ctx, s.ampModule); err != nil {
 		log.Errorf("Failed to register Amp module: %v", err)
@@ -381,6 +392,7 @@ func (s *Server) setupRoutes() {
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
 	v1.Use(AuthMiddleware(s.accessManager))
+	v1.Use(s.postAuthMiddleware()...)
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
@@ -411,6 +423,7 @@ func (s *Server) setupRoutes() {
 	// Gemini compatible API routes
 	v1beta := s.engine.Group("/v1beta")
 	v1beta.Use(AuthMiddleware(s.accessManager))
+	v1beta.Use(s.postAuthMiddleware()...)
 	{
 		v1beta.GET("/models", s.geminiModelsHandler(geminiHandlers))
 		v1beta.POST("/models/*action", geminiHandlers.GeminiHandler)
@@ -424,6 +437,7 @@ func (s *Server) setupRoutes() {
 			"endpoints": []string{
 				"POST /v1/chat/completions",
 				"POST /v1/completions",
+				"POST /v1/images/generations",
 				"GET /v1/models",
 			},
 		})
@@ -540,7 +554,23 @@ func (s *Server) AttachWebsocketRoute(path string, handler http.Handler) {
 		c.Abort()
 	}
 
-	s.engine.GET(trimmed, conditionalAuth, finalHandler)
+	chain := []gin.HandlerFunc{conditionalAuth}
+	if s.keyExpiry != nil {
+		chain = append(chain, s.keyExpiry.Handler())
+	}
+	chain = append(chain, finalHandler)
+	s.engine.GET(trimmed, chain...)
+}
+
+func (s *Server) postAuthMiddleware() []gin.HandlerFunc {
+	middlewares := make([]gin.HandlerFunc, 0, 2)
+	if s != nil && s.keyExpiry != nil {
+		middlewares = append(middlewares, s.keyExpiry.Handler())
+	}
+	if s != nil && s.inboundLimiter != nil {
+		middlewares = append(middlewares, s.inboundLimiter.Handler())
+	}
+	return middlewares
 }
 
 func (s *Server) registerManagementRoutes() {
@@ -1444,6 +1474,9 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	redisqueue.SetEnabled(s.managementRoutesEnabled.Load() || (cfg != nil && cfg.Home.Enabled))
 
 	s.applyAccessConfig(oldCfg, cfg)
+	if s.inboundLimiter != nil {
+		s.inboundLimiter.SetConfig(cfg.InboundLimits)
+	}
 	s.cfg = cfg
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	if oldCfg != nil && s.wsAuthChanged != nil && oldCfg.WebsocketAuth != cfg.WebsocketAuth {
@@ -1530,6 +1563,7 @@ func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
 		if err == nil {
 			if result != nil {
 				c.Set("userApiKey", result.Principal)
+				c.Set("apiKey", result.Principal)
 				c.Set("accessProvider", result.Provider)
 				if len(result.Metadata) > 0 {
 					c.Set("accessMetadata", result.Metadata)

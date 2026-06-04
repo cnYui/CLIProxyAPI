@@ -137,6 +137,19 @@ codex:
 # When true, enable authentication for the WebSocket API (/v1/ws).
 ws-auth: true
 
+# Application-layer inbound concurrency limits for authenticated client API requests.
+# Disabled by default to preserve existing behavior on upgrade.
+# inbound-limits:
+#   enabled: true
+#   global-concurrency: 75
+#   per-api-key-concurrency: 5
+#   reject-status-code: 429
+#   reject-message: "too many concurrent requests"
+#   endpoint-overrides:
+#     - path-prefix: "/v1/images/generations"
+#       global-concurrency: 10
+#       per-api-key-concurrency: 1
+
 # When true, enable Gemini CLI internal endpoints (/v1internal:*).
 # Default is false for safety.
 enable-gemini-cli-endpoint: false

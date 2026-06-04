@@ -15,10 +15,11 @@ import (
 // BaseAPIHandler for constructing SDK-specific handlers, and the resolved
 // authentication middleware for protecting routes that require API keys.
 type Context struct {
-	Engine         *gin.Engine
-	BaseHandler    *handlers.BaseAPIHandler
-	Config         *config.Config
-	AuthMiddleware gin.HandlerFunc
+	Engine             *gin.Engine
+	BaseHandler        *handlers.BaseAPIHandler
+	Config             *config.Config
+	AuthMiddleware     gin.HandlerFunc
+	PostAuthMiddleware []gin.HandlerFunc
 }
 
 // RouteModule represents a pluggable routing module that can register routes
@@ -69,10 +70,11 @@ type RouteModuleV2 interface {
 // Example usage:
 //
 //	ctx := modules.Context{
-//	    Engine:         engine,
-//	    BaseHandler:    baseHandler,
-//	    Config:         cfg,
-//	    AuthMiddleware: authMiddleware,
+//	    Engine:             engine,
+//	    BaseHandler:        baseHandler,
+//	    Config:             cfg,
+//	    AuthMiddleware:     authMiddleware,
+//	    PostAuthMiddleware: postAuthMiddleware,
 //	}
 //	if err := modules.RegisterModule(ctx, ampModule); err != nil {
 //	    log.Errorf("Failed to register module: %v", err)
