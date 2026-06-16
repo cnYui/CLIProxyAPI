@@ -25,6 +25,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/access"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware/inboundlimit"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware/keyexpiry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -226,6 +227,9 @@ type Server struct {
 	// keyExpiry rejects yui.web managed API keys that are not active.
 	keyExpiry *keyexpiry.Middleware
 
+	// inboundLimiter protects client-facing API routes from unbounded concurrency.
+	inboundLimiter *inboundlimit.Middleware
+
 	// managementRoutesRegistered tracks whether the management routes have been attached to the engine.
 	managementRoutesRegistered atomic.Bool
 	// managementRoutesEnabled controls whether management endpoints serve real handlers.
@@ -317,6 +321,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		envManagementSecret: envManagementSecret,
 		wsRoutes:            make(map[string]struct{}),
 		pluginHost:          optionState.pluginHost,
+		inboundLimiter:      inboundlimit.NewMiddleware(cfg.InboundLimits),
 		keyExpiry:           keyexpiry.NewFromEnv(),
 	}
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
@@ -488,6 +493,7 @@ func (s *Server) setupRoutes() {
 			"endpoints": []string{
 				"POST /v1/chat/completions",
 				"POST /v1/completions",
+				"POST /v1/images/generations",
 				"GET /v1/models",
 			},
 		})
@@ -613,10 +619,14 @@ func (s *Server) AttachWebsocketRoute(path string, handler http.Handler) {
 }
 
 func (s *Server) postAuthMiddleware() []gin.HandlerFunc {
-	if s == nil || s.keyExpiry == nil {
-		return nil
+	middlewares := make([]gin.HandlerFunc, 0, 2)
+	if s != nil && s.keyExpiry != nil {
+		middlewares = append(middlewares, s.keyExpiry.Handler())
 	}
-	return []gin.HandlerFunc{s.keyExpiry.Handler()}
+	if s != nil && s.inboundLimiter != nil {
+		middlewares = append(middlewares, s.inboundLimiter.Handler())
+	}
+	return middlewares
 }
 
 func (s *Server) registerManagementRoutes() {
@@ -1667,6 +1677,9 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	redisqueue.SetEnabled(s.managementRoutesEnabled.Load() || (cfg != nil && cfg.Home.Enabled))
 
 	s.applyAccessConfig(oldCfg, cfg)
+	if s.inboundLimiter != nil {
+		s.inboundLimiter.SetConfig(cfg.InboundLimits)
+	}
 	s.cfg = cfg
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	if oldCfg != nil && s.wsAuthChanged != nil && oldCfg.WebsocketAuth != cfg.WebsocketAuth {
@@ -1747,6 +1760,7 @@ func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
 		if err == nil {
 			if result != nil {
 				c.Set("userApiKey", result.Principal)
+				c.Set("apiKey", result.Principal)
 				c.Set("accessProvider", result.Provider)
 				if len(result.Metadata) > 0 {
 					c.Set("accessMetadata", result.Metadata)

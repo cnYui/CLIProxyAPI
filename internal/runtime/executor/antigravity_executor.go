@@ -629,7 +629,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	}
 
 	isClaude := strings.Contains(strings.ToLower(baseModel), "claude")
-	if isClaude || strings.Contains(baseModel, "gemini-3-pro") || strings.Contains(baseModel, "gemini-3.1-flash-image") {
+	if antigravityImageGenerationRequest(opts) || isClaude || strings.Contains(baseModel, "gemini-3-pro") || strings.Contains(baseModel, "gemini-3.1-flash-image") {
 		return e.executeClaudeNonStream(ctx, auth, req, opts)
 	}
 
@@ -832,6 +832,12 @@ attemptLoop:
 // executeClaudeNonStream performs a claude non-streaming request to the Antigravity API.
 func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	imageGeneration := antigravityImageGenerationRequest(opts)
+	if imageGeneration {
+		req.Payload = openAIImageGenerationRequestToChatCompletions(baseModel, req.Payload)
+		opts.OriginalRequest = req.Payload
+		opts.Alt = ""
+	}
 	if inCooldown, remaining, errCooldown := antigravityIsInShortCooldownRequired(ctx, auth, baseModel, time.Now()); errCooldown != nil {
 		return resp, homeKVUnavailableStatusErr(errCooldown)
 	} else if inCooldown && !antigravityShouldBypassShortCooldown(ctx, e.cfg) {
@@ -1080,6 +1086,9 @@ attemptLoop:
 			reporter.Publish(ctx, helps.ParseAntigravityUsage(resp.Payload))
 			var param any
 			converted := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, resp.Payload, &param)
+			if imageGeneration {
+				converted = openAIChatCompletionsResponseToImageGeneration(converted)
+			}
 			resp = cliproxyexecutor.Response{Payload: converted, Headers: httpResp.Header.Clone()}
 			reporter.EnsurePublished(ctx)
 
@@ -1291,6 +1300,95 @@ func (e *AntigravityExecutor) convertStreamToNonStream(stream []byte) []byte {
 		output = string(updatedOutput)
 	}
 	return []byte(output)
+}
+
+func antigravityImageGenerationRequest(opts cliproxyexecutor.Options) bool {
+	if opts.Alt == "images/generations" {
+		return true
+	}
+	if !strings.EqualFold(strings.TrimSpace(opts.SourceFormat.String()), "openai-image") {
+		return false
+	}
+	path := helps.PayloadRequestPath(opts)
+	return strings.HasSuffix(path, "/v1/images/generations") || strings.HasSuffix(path, "/images/generations")
+}
+
+func openAIImageGenerationRequestToChatCompletions(modelName string, rawJSON []byte) []byte {
+	prompt := strings.TrimSpace(gjson.GetBytes(rawJSON, "prompt").String())
+	if prompt == "" {
+		prompt = "Generate an image."
+	}
+
+	out := []byte(`{"model":"","messages":[{"role":"user","content":""}],"modalities":["image","text"],"stream":false}`)
+	out, _ = sjson.SetBytes(out, "model", modelName)
+	out, _ = sjson.SetBytes(out, "messages.0.content", prompt)
+
+	if aspectRatio := openAIImageSizeToAspectRatio(gjson.GetBytes(rawJSON, "size").String()); aspectRatio != "" {
+		out, _ = sjson.SetBytes(out, "image_config.aspect_ratio", aspectRatio)
+	}
+	return out
+}
+
+func openAIImageSizeToAspectRatio(size string) string {
+	parts := strings.Split(strings.TrimSpace(size), "x")
+	if len(parts) != 2 {
+		return ""
+	}
+	width, errWidth := strconv.Atoi(parts[0])
+	height, errHeight := strconv.Atoi(parts[1])
+	if errWidth != nil || errHeight != nil || width <= 0 || height <= 0 {
+		return ""
+	}
+	g := imageAspectRatioGCD(width, height)
+	if g <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d:%d", width/g, height/g)
+}
+
+func imageAspectRatioGCD(a, b int) int {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	if a < 0 {
+		return -a
+	}
+	return a
+}
+
+func openAIChatCompletionsResponseToImageGeneration(rawJSON []byte) []byte {
+	data := make([]map[string]string, 0)
+	for _, choice := range gjson.GetBytes(rawJSON, "choices").Array() {
+		for _, image := range choice.Get("message.images").Array() {
+			imageURL := image.Get("image_url.url").String()
+			if imageURL == "" {
+				continue
+			}
+			if b64, ok := dataURLBase64(imageURL); ok {
+				data = append(data, map[string]string{"b64_json": b64})
+			}
+		}
+	}
+
+	payload := map[string]any{
+		"created": time.Now().Unix(),
+		"data":    data,
+	}
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return []byte(`{"created":0,"data":[]}`)
+	}
+	return out
+}
+
+func dataURLBase64(imageURL string) (string, bool) {
+	const marker = ";base64,"
+	idx := strings.Index(imageURL, marker)
+	if idx < 0 {
+		return "", false
+	}
+	b64 := strings.TrimSpace(imageURL[idx+len(marker):])
+	return b64, b64 != ""
 }
 
 // ExecuteStream performs a streaming request to the Antigravity API.
