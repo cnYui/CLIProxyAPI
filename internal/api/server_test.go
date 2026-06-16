@@ -347,20 +347,40 @@ func TestServerRejectsInactiveShopKeyAfterAuth(t *testing.T) {
 
 	server := newTestServer(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-	req.Header.Set("Authorization", "Bearer test-key")
-
-	rr := httptest.NewRecorder()
-	server.engine.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("unexpected status code: got %d want %d; body=%s", rr.Code, http.StatusUnauthorized, rr.Body.String())
+	testCases := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{name: "openai compatible", method: http.MethodGet, path: "/v1/models"},
+		{name: "openai video prefix", method: http.MethodPost, path: "/openai/v1/videos", body: `{"model":`},
+		{name: "codex direct", method: http.MethodGet, path: "/backend-api/codex/responses"},
+		{name: "gemini compatible", method: http.MethodGet, path: "/v1beta/models"},
 	}
-	if !strings.Contains(rr.Body.String(), "api_key_inactive") {
-		t.Fatalf("response body missing inactive code: %s", rr.Body.String())
-	}
-	if !strings.Contains(rr.Body.String(), "insufficient_balance") {
-		t.Fatalf("response body missing yui.web status: %s", rr.Body.String())
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Authorization", "Bearer test-key")
+			if tc.body != "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
+
+			rr := httptest.NewRecorder()
+			server.engine.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusUnauthorized {
+				t.Fatalf("unexpected status code: got %d want %d; body=%s", rr.Code, http.StatusUnauthorized, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), "api_key_inactive") {
+				t.Fatalf("response body missing inactive code: %s", rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), "insufficient_balance") {
+				t.Fatalf("response body missing yui.web status: %s", rr.Body.String())
+			}
+		})
 	}
 }
 
