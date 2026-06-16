@@ -11,6 +11,7 @@ import (
 	"time"
 
 	gin "github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware/keyexpiry"
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
@@ -228,6 +229,37 @@ func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
 			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusNotFound, rr.Body.String())
 		}
 	})
+}
+
+func TestServerRejectsInactiveShopKeyAfterAuth(t *testing.T) {
+	statusServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("x-internal-token"); got != "shared-token" {
+			t.Fatalf("x-internal-token = %q, want %q", got, "shared-token")
+		}
+		_, _ = w.Write([]byte(`{"managed":true,"active":false,"status":"insufficient_balance","expiresAt":"2000-01-01T00:00:00.000Z"}`))
+	}))
+	defer statusServer.Close()
+
+	t.Setenv(keyexpiry.EnvStatusURL, statusServer.URL)
+	t.Setenv(keyexpiry.EnvToken, "shared-token")
+
+	server := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer test-key")
+
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("unexpected status code: got %d want %d; body=%s", rr.Code, http.StatusUnauthorized, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "api_key_inactive") {
+		t.Fatalf("response body missing inactive code: %s", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "insufficient_balance") {
+		t.Fatalf("response body missing yui.web status: %s", rr.Body.String())
+	}
 }
 
 func TestAmpProviderModelRoutes(t *testing.T) {

@@ -92,6 +92,17 @@ usage-statistics-enabled: false
 # Default: 60. Max: 3600.
 redis-usage-queue-retention-seconds: 60
 
+# yui.web billing handoff is controlled by environment variables, not YAML:
+# USAGE_EVENTS_ENABLED=true
+# USAGE_EVENTS_LOG_DIR=logs/usage
+# USAGE_EVENTS_RETENTION_DAYS=90
+# SHOP_KEY_STATUS_URL=http://127.0.0.1:4173/api/internal/api-keys/status
+# SHOP_KEY_STATUS_TOKEN=<same-as-yui-web-INTERNAL_TOKEN>
+# Optional realtime acceleration:
+# YUI_USAGE_EVENT_URL=http://127.0.0.1:4173/api/internal/usage-events
+# YUI_USAGE_EVENT_TOKEN=<same-as-yui-web-INTERNAL_TOKEN>
+# YUI_USAGE_EVENT_HMAC_SECRET=<same-as-yui-web-USAGE_EVENT_HMAC_SECRET>
+
 # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
 # Per-entry proxy-url also supports "direct" or "none" to bypass both the global proxy-url and environment proxies explicitly.
 proxy-url: ""
