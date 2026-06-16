@@ -29,12 +29,13 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - 2026-06-13: Verified Shop client API key preview `sk-yui-OKeCq...hc9zuG` for phone `152****8391` already existed in `config.yaml`; backup: `backups/config-before-add-15279148391-key-20260613-203919.yaml`; `/v1/models` returned HTTP 200 with 5 models.
 - 2026-06-13: Added 20 new Shop pool client keys to `config.yaml`; backup: `backups/config-before-add-20-shop-api-keys-20260613-174633.yaml`. Sample preview `sk-yui-lxLd7...OQjSJH` returned `401 api_key_inactive`, which is expected before Shop redemption; yui.web context: `docs/ai/context/20260613-174633-add-20-shop-api-keys-implementation_CN.md`.
 - 2026-06-16: yui.web 计费迁移后端边界已落到源码：CLIProxyAPI 只生成 usage JSONL、可选实时 POST usage、并在认证后查询 yui.web key 状态；价格、扣费、余额和欠费状态都由 yui.web 负责。环境变量见 `config.example.yaml` 注释块；实施记录：`docs/ai/context/20260616-112304-yui-web-billing-migration-backend-implementation_CN.md`。
+- 2026-06-16: 合并 `origin/main` / `v7.2.7` 时保留 yui.web key 状态检查，并将 `/openai/v1` 视频入口纳入 post-auth 检查；上游已删除 Amp，不要在冲突处理中恢复 `internal/api/modules/amp`。记录：`docs/ai/context/20260616-113355-upstream-main-merge-resolution_CN.md`。
 
 ## Architecture
 - `cmd/server/` — Server entrypoint
 - `internal/api/` — Gin HTTP API (routes, middleware, modules)
 - `internal/api/middleware/keyexpiry/` — yui.web 托管 API key 状态检查；`managed=true, active=false` 返回 `401 api_key_inactive`。托管 active key 不缓存，确保事后扣成负数后下一次调用立即被拒绝。
-- `internal/api/modules/amp/` — Amp integration (Amp-style routes + reverse proxy)
+- `internal/api/modules/amp/` — Removed upstream in `v7.2.7`; do not restore it during local merge conflict resolution.
 - `internal/thinking/` — Main thinking/reasoning pipeline. `ApplyThinking()` (apply.go) parses suffixes (`suffix.go`, suffix overrides body), normalizes config to canonical `ThinkingConfig` (`types.go`), normalizes and validates centrally (`validate.go`/`convert.go`), then applies provider-specific output via `ProviderApplier`. Do not break this "canonical representation → per-provider translation" architecture.
 - `internal/runtime/executor/` — Per-provider runtime executors (incl. Codex WebSocket)
 - `internal/translator/` — Provider protocol translators (and shared `common`)
