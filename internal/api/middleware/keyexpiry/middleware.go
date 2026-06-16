@@ -140,7 +140,9 @@ func (m *Middleware) check(ctx context.Context, apiKey string) (statusResult, er
 	if err != nil {
 		return statusResult{}, errStatusUnavailable
 	}
-	defer response.Body.Close()
+	defer func() {
+		_ = response.Body.Close()
+	}()
 
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return statusResult{}, errStatusUnavailable
@@ -150,7 +152,9 @@ func (m *Middleware) check(ctx context.Context, apiKey string) (statusResult, er
 	if errDecode := json.NewDecoder(response.Body).Decode(&result); errDecode != nil {
 		return statusResult{}, errStatusUnavailable
 	}
-	m.store(apiKey, result)
+	if !result.Managed || !result.Active {
+		m.store(apiKey, result)
+	}
 	return result, nil
 }
 
@@ -185,15 +189,20 @@ func (m *Middleware) store(apiKey string, result statusResult) {
 }
 
 func apiKeyFromContext(c *gin.Context) string {
-	value, ok := c.Get("apiKey")
-	if !ok {
-		return ""
+	for _, key := range []string{"userApiKey", "apiKey"} {
+		value, ok := c.Get(key)
+		if !ok {
+			continue
+		}
+		apiKey, ok := value.(string)
+		if !ok {
+			continue
+		}
+		if trimmed := strings.TrimSpace(apiKey); trimmed != "" {
+			return trimmed
+		}
 	}
-	apiKey, ok := value.(string)
-	if !ok {
-		return ""
-	}
-	return strings.TrimSpace(apiKey)
+	return ""
 }
 
 func statusEndpoint(rawURL string, apiKey string) (string, error) {
@@ -225,7 +234,7 @@ func inactiveResponse(status string) gin.H {
 	}
 	return gin.H{
 		"error": gin.H{
-			"message": "API key is not active. Redeem a new key before making new requests.",
+			"message": "API key is not active. Recharge or clear the account debt before making new requests.",
 			"type":    "invalid_request_error",
 			"code":    "api_key_inactive",
 			"status":  status,

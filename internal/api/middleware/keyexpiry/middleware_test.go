@@ -66,7 +66,7 @@ func TestMiddlewareRejectsManagedInactiveShopKeys(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"managed":   true,
 			"active":    false,
-			"status":    "expired",
+			"status":    "insufficient_balance",
 			"expiresAt": "2000-01-01T00:00:00.000Z",
 		})
 	}))
@@ -77,13 +77,55 @@ func TestMiddlewareRejectsManagedInactiveShopKeys(t *testing.T) {
 		Token:     "shared-token",
 	})
 
-	statusCode, body := runRequest(t, middleware.Handler(), "sk-expired")
+	statusCode, body := runRequest(t, middleware.Handler(), "sk-debt")
 
 	if statusCode != http.StatusUnauthorized {
 		t.Fatalf("status code = %d, want %d; body=%s", statusCode, http.StatusUnauthorized, body)
 	}
 	if !strings.Contains(body, "api_key_inactive") {
 		t.Fatalf("body missing inactive code: %s", body)
+	}
+	if !strings.Contains(body, "insufficient_balance") {
+		t.Fatalf("body missing yui.web status: %s", body)
+	}
+}
+
+func TestMiddlewareDoesNotCacheManagedActiveShopKeys(t *testing.T) {
+	var calls int
+	statusServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls += 1
+		response := map[string]any{
+			"managed": true,
+			"active":  true,
+			"status":  "active",
+		}
+		if calls > 1 {
+			response = map[string]any{
+				"managed": true,
+				"active":  false,
+				"status":  "insufficient_balance",
+			}
+		}
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer statusServer.Close()
+
+	middleware := NewMiddleware(Config{
+		StatusURL: statusServer.URL,
+		Token:     "shared-token",
+	})
+
+	firstStatus, firstBody := runRequest(t, middleware.Handler(), "sk-managed")
+	if firstStatus != http.StatusOK {
+		t.Fatalf("first status code = %d, want %d; body=%s", firstStatus, http.StatusOK, firstBody)
+	}
+
+	secondStatus, secondBody := runRequest(t, middleware.Handler(), "sk-managed")
+	if secondStatus != http.StatusUnauthorized {
+		t.Fatalf("second status code = %d, want %d; body=%s", secondStatus, http.StatusUnauthorized, secondBody)
+	}
+	if calls != 2 {
+		t.Fatalf("status service calls = %d, want 2", calls)
 	}
 }
 
